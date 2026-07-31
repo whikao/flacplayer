@@ -101,7 +101,7 @@ class SafImporter(private val context: Context) {
             duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
                 ?.toLongOrNull() ?: 0L
             embeddedLyrics = try {
-                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_LYRICS)
+                null
             } catch (_: Exception) {
                 null
             }
