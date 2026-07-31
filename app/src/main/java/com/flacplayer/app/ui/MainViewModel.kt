@@ -100,6 +100,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { repository.addToPlaylist(playlistId, track.id) }
     }
 
+    fun addTracksToPlaylist(playlistId: Long, trackIds: List<Long>, onDone: (Int) -> Unit) {
+        viewModelScope.launch {
+            val added = repository.addTracksToPlaylist(playlistId, trackIds)
+            onDone(added)
+        }
+    }
+
     fun removeFromPlaylist(playlistId: Long, track: TrackEntity) {
         viewModelScope.launch { repository.removeFromPlaylist(playlistId, track.id) }
     }

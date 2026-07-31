@@ -1,0 +1,411 @@
+From 10180dd12732f54de14628c5c157023f172904fd Mon Sep 17 00:00:00 2001
+From: ci <ci@local>
+Date: Fri, 31 Jul 2026 12:09:25 +0800
+Subject: [PATCH] feat: multi-select batch add to playlist
+
+---
+ .../main/java/com/flacplayer/app/data/Daos.kt |   3 +
+ .../flacplayer/app/data/MusicRepository.kt    |   9 +
+ .../com/flacplayer/app/ui/MainViewModel.kt    |   7 +
+ .../java/com/flacplayer/app/ui/SongsScreen.kt | 254 +++++++++++++-----
+ 4 files changed, 208 insertions(+), 65 deletions(-)
+
+diff --git a/app/src/main/java/com/flacplayer/app/data/Daos.kt b/app/src/main/java/com/flacplayer/app/data/Daos.kt
+index 7449dda..ada8121 100644
+--- a/app/src/main/java/com/flacplayer/app/data/Daos.kt
++++ b/app/src/main/java/com/flacplayer/app/data/Daos.kt
+@@ -51,6 +51,9 @@ interface PlaylistDao {
+     @Insert(onConflict = OnConflictStrategy.REPLACE)
+     suspend fun insertEntry(entry: PlaylistEntry)
+ 
++    @Query("SELECT trackId FROM playlist_entries WHERE playlistId = :playlistId")
++    suspend fun trackIdsInPlaylist(playlistId: Long): List<Long>
++
+     @Query("DELETE FROM playlist_entries WHERE playlistId = :playlistId AND trackId = :trackId")
+     suspend fun removeEntry(playlistId: Long, trackId: Long)
+ 
+diff --git a/app/src/main/java/com/flacplayer/app/data/MusicRepository.kt b/app/src/main/java/com/flacplayer/app/data/MusicRepository.kt
+index ed64c45..fb3dd0d 100644
+--- a/app/src/main/java/com/flacplayer/app/data/MusicRepository.kt
++++ b/app/src/main/java/com/flacplayer/app/data/MusicRepository.kt
+@@ -33,6 +33,15 @@ class MusicRepository(context: Context) {
+         playlistDao.insertEntry(PlaylistEntry(playlistId, trackId, pos))
+     }
+ 
++    /** 批量添加，跳过已在歌单中的曲目，返回实际添加的数量 */
++    suspend fun addTracksToPlaylist(playlistId: Long, trackIds: List<Long>): Int {
++        val existing = playlistDao.trackIdsInPlaylist(playlistId).toSet()
++        val newIds = trackIds.distinct().filter { it !in existing }
++        var pos = playlistDao.nextPosition(playlistId)
++        newIds.forEach { playlistDao.insertEntry(PlaylistEntry(playlistId, it, pos++)) }
++        return newIds.size
++    }
++
+     suspend fun removeFromPlaylist(playlistId: Long, trackId: Long) =
+         playlistDao.removeEntry(playlistId, trackId)
+ }
+diff --git a/app/src/main/java/com/flacplayer/app/ui/MainViewModel.kt b/app/src/main/java/com/flacplayer/app/ui/MainViewModel.kt
+index 6cec8f8..d83e6bd 100644
+--- a/app/src/main/java/com/flacplayer/app/ui/MainViewModel.kt
++++ b/app/src/main/java/com/flacplayer/app/ui/MainViewModel.kt
+@@ -100,6 +100,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
+         viewModelScope.launch { repository.addToPlaylist(playlistId, track.id) }
+     }
+ 
++    fun addTracksToPlaylist(playlistId: Long, trackIds: List<Long>, onDone: (Int) -> Unit) {
++        viewModelScope.launch {
++            val added = repository.addTracksToPlaylist(playlistId, trackIds)
++            onDone(added)
++        }
++    }
++
+     fun removeFromPlaylist(playlistId: Long, track: TrackEntity) {
+         viewModelScope.launch { repository.removeFromPlaylist(playlistId, track.id) }
+     }
+diff --git a/app/src/main/java/com/flacplayer/app/ui/SongsScreen.kt b/app/src/main/java/com/flacplayer/app/ui/SongsScreen.kt
+index ae9b461..4a1d948 100644
+--- a/app/src/main/java/com/flacplayer/app/ui/SongsScreen.kt
++++ b/app/src/main/java/com/flacplayer/app/ui/SongsScreen.kt
+@@ -1,6 +1,8 @@
+ package com.flacplayer.app.ui
+ 
++import androidx.compose.foundation.ExperimentalFoundationApi
+ import androidx.compose.foundation.clickable
++import androidx.compose.foundation.combinedClickable
+ import androidx.compose.foundation.layout.Arrangement
+ import androidx.compose.foundation.layout.Box
+ import androidx.compose.foundation.layout.Column
+@@ -16,12 +18,14 @@ import androidx.compose.foundation.lazy.itemsIndexed
+ import androidx.compose.foundation.shape.RoundedCornerShape
+ import androidx.compose.material.icons.Icons
+ import androidx.compose.material.icons.filled.Add
++import androidx.compose.material.icons.filled.CheckCircle
++import androidx.compose.material.icons.filled.Close
+ import androidx.compose.material.icons.filled.Delete
+ import androidx.compose.material.icons.filled.FolderOpen
+ import androidx.compose.material.icons.filled.MusicNote
+ import androidx.compose.material.icons.filled.PlayArrow
++import androidx.compose.material.icons.filled.RadioButtonUnchecked
+ import androidx.compose.material3.AlertDialog
+-import androidx.compose.material3.Card
+ import androidx.compose.material3.CircularProgressIndicator
+ import androidx.compose.material3.ExperimentalMaterial3Api
+ import androidx.compose.material3.FilledTonalButton
+@@ -29,6 +33,8 @@ import androidx.compose.material3.Icon
+ import androidx.compose.material3.IconButton
+ import androidx.compose.material3.ListItem
+ import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.SnackbarHost
++import androidx.compose.material3.SnackbarHostState
+ import androidx.compose.material3.Text
+ import androidx.compose.material3.TextButton
+ import androidx.compose.runtime.Composable
+@@ -36,6 +42,8 @@ import androidx.compose.runtime.collectAsState
+ import androidx.compose.runtime.getValue
+ import androidx.compose.runtime.mutableStateOf
+ import androidx.compose.runtime.remember
++import androidx.compose.runtime.rememberCoroutineScope
++import androidx.compose.runtime.saveable.rememberSaveable
+ import androidx.compose.runtime.setValue
+ import androidx.compose.ui.Alignment
+ import androidx.compose.ui.Modifier
+@@ -44,6 +52,7 @@ import androidx.compose.ui.layout.ContentScale
+ import androidx.compose.ui.unit.dp
+ import coil.compose.AsyncImage
+ import com.flacplayer.app.data.TrackEntity
++import kotlinx.coroutines.launch
+ import java.io.File
+ 
+ fun formatDuration(ms: Long): String {
+@@ -64,68 +73,130 @@ fun SongsScreen(
+     val playlists by viewModel.playlists.collectAsState()
+     var addToPlaylistTarget by remember { mutableStateOf<TrackEntity?>(null) }
+ 
+-    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+-        Spacer(Modifier.height(8.dp))
+-        Text("我的歌曲", style = MaterialTheme.typography.headlineSmall)
+-        Spacer(Modifier.height(8.dp))
++    // 多选状态：选中的 trackId 集合（rememberSaveable 用 List 存储以便跨配置恢复）
++    var selectedIds by rememberSaveable { mutableStateOf(listOf<Long>()) }
++    val selectionMode = selectedIds.isNotEmpty()
++    var batchAddDialog by remember { mutableStateOf(false) }
+ 
+-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+-            FilledTonalButton(onClick = onPickFolder) {
+-                Icon(Icons.Filled.FolderOpen, contentDescription = null)
+-                Spacer(Modifier.size(6.dp))
+-                Text("导入文件夹")
+-            }
+-            FilledTonalButton(onClick = onPickFiles) {
+-                Icon(Icons.Filled.Add, contentDescription = null)
+-                Spacer(Modifier.size(6.dp))
+-                Text("导入文件")
+-            }
+-            FilledTonalButton(onClick = onRequestPermission) {
+-                Text("权限")
+-            }
+-        }
++    val snackbarHostState = remember { SnackbarHostState() }
++    val scope = rememberCoroutineScope()
+ 
+-        if (tracks.isNotEmpty()) {
++    Box(Modifier.fillMaxSize()) {
++        Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+             Spacer(Modifier.height(8.dp))
+-            FilledTonalButton(onClick = { viewModel.playAll(tracks, 0) }) {
+-                Icon(Icons.Filled.PlayArrow, contentDescription = null)
+-                Spacer(Modifier.size(6.dp))
+-                Text("播放全部 (${tracks.size})")
+-            }
+-        }
++            if (selectionMode) {
++                // 多选工具栏
++                Row(
++                    Modifier.fillMaxWidth(),
++                    verticalAlignment = Alignment.CenterVertically,
++                    horizontalArrangement = Arrangement.spacedBy(8.dp)
++                ) {
++                    IconButton(onClick = { selectedIds = emptyList() }) {
++                        Icon(Icons.Filled.Close, contentDescription = "退出多选")
++                    }
++                    Text(
++                        "已选 ${selectedIds.size} 首",
++                        style = MaterialTheme.typography.titleMedium,
++                        modifier = Modifier.weight(1f)
++                    )
++                    TextButton(onClick = {
++                        selectedIds = if (selectedIds.size == tracks.size) {
++                            emptyList()
++                        } else {
++                            tracks.map { it.id }
++                        }
++                    }) {
++                        Text(if (selectedIds.size == tracks.size) "取消全选" else "全选")
++                    }
++                    FilledTonalButton(onClick = { batchAddDialog = true }) {
++                        Icon(Icons.Filled.Add, contentDescription = null)
++                        Spacer(Modifier.size(4.dp))
++                        Text("添加到歌单")
++                    }
++                }
++            } else {
++                Text("我的歌曲", style = MaterialTheme.typography.headlineSmall)
++                Spacer(Modifier.height(8.dp))
+ 
+-        if (importing) {
+-            Row(
+-                Modifier.padding(vertical = 8.dp),
+-                verticalAlignment = Alignment.CenterVertically
+-            ) {
+-                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+-                Spacer(Modifier.size(8.dp))
+-                Text("正在导入…", style = MaterialTheme.typography.bodySmall)
++                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++                    FilledTonalButton(onClick = onPickFolder) {
++                        Icon(Icons.Filled.FolderOpen, contentDescription = null)
++                        Spacer(Modifier.size(6.dp))
++                        Text("导入文件夹")
++                    }
++                    FilledTonalButton(onClick = onPickFiles) {
++                        Icon(Icons.Filled.Add, contentDescription = null)
++                        Spacer(Modifier.size(6.dp))
++                        Text("导入文件")
++                    }
++                    FilledTonalButton(onClick = onRequestPermission) {
++                        Text("权限")
++                    }
++                }
++
++                if (tracks.isNotEmpty()) {
++                    Spacer(Modifier.height(8.dp))
++                    FilledTonalButton(onClick = { viewModel.playAll(tracks, 0) }) {
++                        Icon(Icons.Filled.PlayArrow, contentDescription = null)
++                        Spacer(Modifier.size(6.dp))
++                        Text("播放全部 (${tracks.size})")
++                    }
++                }
+             }
+-        }
+ 
+-        Spacer(Modifier.height(8.dp))
+-        if (tracks.isEmpty()) {
+-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+-                Text(
+-                    "还没有歌曲\n点上方「导入文件夹」或「导入文件」\n只读取你手动选择的内容，不做全盘扫描",
+-                    style = MaterialTheme.typography.bodyMedium,
+-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+-                )
++            if (importing) {
++                Row(
++                    Modifier.padding(vertical = 8.dp),
++                    verticalAlignment = Alignment.CenterVertically
++                ) {
++                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
++                    Spacer(Modifier.size(8.dp))
++                    Text("正在导入…", style = MaterialTheme.typography.bodySmall)
++                }
+             }
+-        } else {
+-            LazyColumn {
+-                itemsIndexed(tracks, key = { _, t -> t.id }) { index, track ->
+-                    TrackRow(
+-                        track = track,
+-                        onClick = { viewModel.playAll(tracks, index) },
+-                        onAddToPlaylist = { addToPlaylistTarget = track },
+-                        onRemove = { viewModel.removeTrack(track) }
++
++            Spacer(Modifier.height(8.dp))
++            if (tracks.isEmpty()) {
++                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
++                    Text(
++                        "还没有歌曲\n点上方「导入文件夹」或「导入文件」\n只读取你手动选择的内容，不做全盘扫描",
++                        style = MaterialTheme.typography.bodyMedium,
++                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                     )
+                 }
++            } else {
++                LazyColumn {
++                    itemsIndexed(tracks, key = { _, t -> t.id }) { index, track ->
++                        TrackRow(
++                            track = track,
++                            selectionMode = selectionMode,
++                            selected = track.id in selectedIds,
++                            onClick = {
++                                if (selectionMode) {
++                                    selectedIds = if (track.id in selectedIds) {
++                                        selectedIds - track.id
++                                    } else {
++                                        selectedIds + track.id
++                                    }
++                                } else {
++                                    viewModel.playAll(tracks, index)
++                                }
++                            },
++                            onLongClick = {
++                                if (!selectionMode) selectedIds = listOf(track.id)
++                            },
++                            onAddToPlaylist = { addToPlaylistTarget = track },
++                            onRemove = { viewModel.removeTrack(track) }
++                        )
++                    }
++                }
+             }
+         }
++
++        SnackbarHost(
++            hostState = snackbarHostState,
++            modifier = Modifier.align(Alignment.BottomCenter)
++        )
+     }
+ 
+     addToPlaylistTarget?.let { track ->
+@@ -156,27 +227,80 @@ fun SongsScreen(
+             }
+         )
+     }
++
++    if (batchAddDialog) {
++        AlertDialog(
++            onDismissRequest = { batchAddDialog = false },
++            title = { Text("添加到歌单") },
++            text = {
++                Column {
++                    if (playlists.isEmpty()) {
++                        Text("暂无歌单，请先在「歌单」页新建")
++                    }
++                    playlists.forEach { p ->
++                        Text(
++                            p.name,
++                            modifier = Modifier
++                                .fillMaxWidth()
++                                .clickable {
++                                    val ids = selectedIds
++                                    batchAddDialog = false
++                                    selectedIds = emptyList()
++                                    viewModel.addTracksToPlaylist(p.id, ids) { added ->
++                                        scope.launch {
++                                            snackbarHostState.showSnackbar("已添加 $added 首")
++                                        }
++                                    }
++                                }
++                                .padding(vertical = 12.dp)
++                        )
++                    }
++                }
++            },
++            confirmButton = {
++                TextButton(onClick = { batchAddDialog = false }) { Text("取消") }
++            }
++        )
++    }
+ }
+ 
+-@OptIn(ExperimentalMaterial3Api::class)
++@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+ @Composable
+ fun TrackRow(
+     track: TrackEntity,
+     onClick: () -> Unit,
+     onAddToPlaylist: (() -> Unit)? = null,
+-    onRemove: (() -> Unit)? = null
++    onRemove: (() -> Unit)? = null,
++    selectionMode: Boolean = false,
++    selected: Boolean = false,
++    onLongClick: (() -> Unit)? = null
+ ) {
+     ListItem(
+-        modifier = Modifier.clickable(onClick = onClick),
++        modifier = Modifier.combinedClickable(
++            onClick = onClick,
++            onLongClick = onLongClick
++        ),
+         leadingContent = {
+-            AsyncImage(
+-                model = track.coverPath?.let { File(it) },
+-                contentDescription = null,
+-                modifier = Modifier
+-                    .size(48.dp)
+-                    .clip(RoundedCornerShape(6.dp)),
+-                contentScale = ContentScale.Crop
+-            )
++            Row(verticalAlignment = Alignment.CenterVertically) {
++                if (selectionMode) {
++                    Icon(
++                        if (selected) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
++                        contentDescription = if (selected) "已选中" else "未选中",
++                        tint = if (selected) MaterialTheme.colorScheme.primary
++                        else MaterialTheme.colorScheme.onSurfaceVariant,
++                        modifier = Modifier.size(24.dp)
++                    )
++                    Spacer(Modifier.size(8.dp))
++                }
++                AsyncImage(
++                    model = track.coverPath?.let { File(it) },
++                    contentDescription = null,
++                    modifier = Modifier
++                        .size(48.dp)
++                        .clip(RoundedCornerShape(6.dp)),
++                    contentScale = ContentScale.Crop
++                )
++            }
+         },
+         headlineContent = { Text(track.title, maxLines = 1) },
+         supportingContent = {
+@@ -185,12 +309,12 @@ fun TrackRow(
+         trailingContent = {
+             Row(verticalAlignment = Alignment.CenterVertically) {
+                 Text(formatDuration(track.durationMs), style = MaterialTheme.typography.bodySmall)
+-                if (onAddToPlaylist != null) {
++                if (!selectionMode && onAddToPlaylist != null) {
+                     IconButton(onClick = onAddToPlaylist) {
+                         Icon(Icons.Filled.Add, contentDescription = "加入歌单")
+                     }
+                 }
+-                if (onRemove != null) {
++                if (!selectionMode && onRemove != null) {
+                     IconButton(onClick = onRemove) {
+                         Icon(Icons.Filled.Delete, contentDescription = "移除")
+                     }
+-- 
+2.39.5
+

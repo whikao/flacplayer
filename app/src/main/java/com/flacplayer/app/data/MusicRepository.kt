@@ -33,6 +33,15 @@ class MusicRepository(context: Context) {
         playlistDao.insertEntry(PlaylistEntry(playlistId, trackId, pos))
     }
 
+    /** 批量添加，跳过已在歌单中的曲目，返回实际添加的数量 */
+    suspend fun addTracksToPlaylist(playlistId: Long, trackIds: List<Long>): Int {
+        val existing = playlistDao.trackIdsInPlaylist(playlistId).toSet()
+        val newIds = trackIds.distinct().filter { it !in existing }
+        var pos = playlistDao.nextPosition(playlistId)
+        newIds.forEach { playlistDao.insertEntry(PlaylistEntry(playlistId, it, pos++)) }
+        return newIds.size
+    }
+
     suspend fun removeFromPlaylist(playlistId: Long, trackId: Long) =
         playlistDao.removeEntry(playlistId, trackId)
 }
