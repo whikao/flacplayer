@@ -13,10 +13,10 @@ class SleepTimerManager(private val onTimerFinish: () -> Unit) {
 
     val isActive: Boolean get() = _remainingMs.value > 0L
 
-    /** minutes: 1..999 */
+    /** minutes: 1..59999 */
     fun start(minutes: Int) {
         cancel()
-        val total = minutes.coerceIn(1, 999) * 60_000L
+        val total = minutes.coerceIn(1, 59999) * 60_000L
         timer = object : CountDownTimer(total, 1000L) {
             override fun onTick(millisUntilFinished: Long) {
                 _remainingMs.value = millisUntilFinished

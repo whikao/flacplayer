@@ -223,37 +223,83 @@ fun LyricsList(lyrics: List<com.flacplayer.app.lyrics.LrcLine>, positionMs: Long
 
 @Composable
 fun SleepTimerDialog(onDismiss: () -> Unit, onStart: (Int) -> Unit) {
-    var text by remember { mutableStateOf("30") }
+    var hoursText by remember { mutableStateOf("") }
+    var minutesText by remember { mutableStateOf("30") }
     var error by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("睡眠定时") },
         text = {
             Column {
-                Text("输入分钟数（1–999），到时自动暂停播放")
+                Text("输入小时和分钟，到时自动暂停播放，最长约 999 小时")
                 Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = {
-                        text = it.filter { c -> c.isDigit() }.take(3)
-                        error = false
-                    },
-                    singleLine = true,
-                    isError = error,
-                    supportingText = if (error) {
-                        { Text("请输入 1–999 之间的数字") }
-                    } else null,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                Row(Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = hoursText,
+                        onValueChange = {
+                            hoursText = it.take(3)
+                            error = false
+                        },
+                        label = { Text("小时") },
+                        singleLine = true,
+                        isError = error,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.size(8.dp))
+                    OutlinedTextField(
+                        value = minutesText,
+                        onValueChange = {
+                            minutesText = it.take(2)
+                            error = false
+                        },
+                        label = { Text("分钟") },
+                        singleLine = true,
+                        isError = error,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                if (error) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        errorMessage,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
             }
         },
         confirmButton = {
             TextButton(onClick = {
-                val minutes = text.toIntOrNull()
-                if (minutes == null || minutes !in 1..999) {
+                val hours = when {
+                    hoursText.isBlank() -> 0
+                    hoursText.toIntOrNull() == null -> {
+                        error = true
+                        errorMessage = "小时请输入数字"
+                        return@TextButton
+                    }
+                    else -> hoursText.toInt()
+                }
+                val minutes = when {
+                    minutesText.isBlank() -> 0
+                    minutesText.toIntOrNull() == null -> {
+                        error = true
+                        errorMessage = "分钟请输入数字"
+                        return@TextButton
+                    }
+                    else -> minutesText.toInt()
+                }
+                if (hours !in 0..999) {
                     error = true
+                    errorMessage = "小时需在 0–999 之间"
+                } else if (minutes !in 0..59) {
+                    error = true
+                    errorMessage = "分钟需在 0–59 之间"
+                } else if (hours * 60 + minutes <= 0) {
+                    error = true
+                    errorMessage = "请输入大于 0 的时间"
                 } else {
-                    onStart(minutes)
+                    onStart(hours * 60 + minutes)
                 }
             }) { Text("开始") }
         },
