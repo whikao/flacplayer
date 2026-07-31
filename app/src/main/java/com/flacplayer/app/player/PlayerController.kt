@@ -37,6 +37,10 @@ class PlayerController(private val context: Context) {
     private val _positionMs = MutableStateFlow(0L)
     val positionMs: StateFlow<Long> = _positionMs
 
+    /** 本次启动以来实际处于播放状态的累计秒数 */
+    private val _playElapsed = MutableStateFlow(0L)
+    val playElapsed: StateFlow<Long> = _playElapsed
+
     private val _durationMs = MutableStateFlow(0L)
     val durationMs: StateFlow<Long> = _durationMs
 
@@ -63,6 +67,7 @@ class PlayerController(private val context: Context) {
                 c.addListener(listener)
                 syncState(c)
                 startPositionPolling()
+                startElapsedTicker()
                 onReady?.invoke()
             }, ContextCompat.getMainExecutor(context))
         }
@@ -81,6 +86,21 @@ class PlayerController(private val context: Context) {
                 delay(500)
             }
         }
+    }
+
+    private fun startElapsedTicker() {
+        scope.launch {
+            while (true) {
+                if (controller?.isPlaying == true) {
+                    _playElapsed.value += 1
+                }
+                delay(1000)
+            }
+        }
+    }
+
+    fun resetPlayElapsed() {
+        _playElapsed.value = 0L
     }
 
     private fun syncState(player: Player) {

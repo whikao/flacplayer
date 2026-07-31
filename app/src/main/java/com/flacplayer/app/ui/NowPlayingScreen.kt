@@ -1,5 +1,6 @@
 package com.flacplayer.app.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,6 +45,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import java.io.File
@@ -58,6 +61,7 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
     val currentIndex by player.currentIndex.collectAsState()
     val lyrics by viewModel.lyrics.collectAsState()
     val sleepRemaining by viewModel.sleepTimer.remainingMs.collectAsState()
+    val playElapsed by player.playElapsed.collectAsState()
 
     val track = player.currentTrack()
     var dragging by remember { mutableStateOf(false) }
@@ -165,6 +169,18 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
             }
         }
 
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "已播放 ${formatHms(playElapsed)}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .clickable { player.resetPlayElapsed() }
+                .semantics { contentDescription = "累计播放时长，点击清零" }
+                .padding(horizontal = 8.dp, vertical = 4.dp)
+        )
+
         Spacer(Modifier.height(8.dp))
         // 歌词区
         Box(Modifier.fillMaxWidth().weight(1f)) {
@@ -191,6 +207,11 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
             }
         )
     }
+}
+
+fun formatHms(totalSec: Long): String {
+    val sec = totalSec.coerceAtLeast(0L)
+    return "%02d:%02d:%02d".format(sec / 3600, (sec % 3600) / 60, sec % 60)
 }
 
 @Composable

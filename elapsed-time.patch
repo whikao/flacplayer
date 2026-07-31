@@ -1,0 +1,117 @@
+From c33bd2dd4e71b661197e0366f48a1cb8d2310de7 Mon Sep 17 00:00:00 2001
+From: ci <ci@local>
+Date: Fri, 31 Jul 2026 19:26:17 +0800
+Subject: [PATCH] feat: elapsed play time HH:MM:SS
+
+---
+ .../flacplayer/app/player/PlayerController.kt | 20 ++++++++++++++++++
+ .../com/flacplayer/app/ui/NowPlayingScreen.kt | 21 +++++++++++++++++++
+ 2 files changed, 41 insertions(+)
+
+diff --git a/app/src/main/java/com/flacplayer/app/player/PlayerController.kt b/app/src/main/java/com/flacplayer/app/player/PlayerController.kt
+index d2ca218..7280240 100644
+--- a/app/src/main/java/com/flacplayer/app/player/PlayerController.kt
++++ b/app/src/main/java/com/flacplayer/app/player/PlayerController.kt
+@@ -37,6 +37,10 @@ class PlayerController(private val context: Context) {
+     private val _positionMs = MutableStateFlow(0L)
+     val positionMs: StateFlow<Long> = _positionMs
+ 
++    /** 本次启动以来实际处于播放状态的累计秒数 */
++    private val _playElapsed = MutableStateFlow(0L)
++    val playElapsed: StateFlow<Long> = _playElapsed
++
+     private val _durationMs = MutableStateFlow(0L)
+     val durationMs: StateFlow<Long> = _durationMs
+ 
+@@ -63,6 +67,7 @@ class PlayerController(private val context: Context) {
+                 c.addListener(listener)
+                 syncState(c)
+                 startPositionPolling()
++                startElapsedTicker()
+                 onReady?.invoke()
+             }, ContextCompat.getMainExecutor(context))
+         }
+@@ -83,6 +88,21 @@ class PlayerController(private val context: Context) {
+         }
+     }
+ 
++    private fun startElapsedTicker() {
++        scope.launch {
++            while (true) {
++                if (controller?.isPlaying == true) {
++                    _playElapsed.value += 1
++                }
++                delay(1000)
++            }
++        }
++    }
++
++    fun resetPlayElapsed() {
++        _playElapsed.value = 0L
++    }
++
+     private fun syncState(player: Player) {
+         _currentIndex.value = player.currentMediaItemIndex.takeIf { it >= 0 } ?: -1
+         _isPlaying.value = player.isPlaying
+diff --git a/app/src/main/java/com/flacplayer/app/ui/NowPlayingScreen.kt b/app/src/main/java/com/flacplayer/app/ui/NowPlayingScreen.kt
+index 30fb3cc..d82e86a 100644
+--- a/app/src/main/java/com/flacplayer/app/ui/NowPlayingScreen.kt
++++ b/app/src/main/java/com/flacplayer/app/ui/NowPlayingScreen.kt
+@@ -1,5 +1,6 @@
+ package com.flacplayer.app.ui
+ 
++import androidx.compose.foundation.clickable
+ import androidx.compose.foundation.layout.Arrangement
+ import androidx.compose.foundation.layout.Box
+ import androidx.compose.foundation.layout.Column
+@@ -44,6 +45,8 @@ import androidx.compose.ui.Alignment
+ import androidx.compose.ui.Modifier
+ import androidx.compose.ui.draw.clip
+ import androidx.compose.ui.layout.ContentScale
++import androidx.compose.ui.semantics.contentDescription
++import androidx.compose.ui.semantics.semantics
+ import androidx.compose.ui.unit.dp
+ import coil.compose.AsyncImage
+ import java.io.File
+@@ -58,6 +61,7 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
+     val currentIndex by player.currentIndex.collectAsState()
+     val lyrics by viewModel.lyrics.collectAsState()
+     val sleepRemaining by viewModel.sleepTimer.remainingMs.collectAsState()
++    val playElapsed by player.playElapsed.collectAsState()
+ 
+     val track = player.currentTrack()
+     var dragging by remember { mutableStateOf(false) }
+@@ -165,6 +169,18 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
+             }
+         }
+ 
++        Spacer(Modifier.height(4.dp))
++        Text(
++            "已播放 ${formatHms(playElapsed)}",
++            style = MaterialTheme.typography.bodySmall,
++            color = MaterialTheme.colorScheme.onSurfaceVariant,
++            modifier = Modifier
++                .clip(RoundedCornerShape(8.dp))
++                .clickable { player.resetPlayElapsed() }
++                .semantics { contentDescription = "累计播放时长，点击清零" }
++                .padding(horizontal = 8.dp, vertical = 4.dp)
++        )
++
+         Spacer(Modifier.height(8.dp))
+         // 歌词区
+         Box(Modifier.fillMaxWidth().weight(1f)) {
+@@ -193,6 +209,11 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
+     }
+ }
+ 
++fun formatHms(totalSec: Long): String {
++    val sec = totalSec.coerceAtLeast(0L)
++    return "%02d:%02d:%02d".format(sec / 3600, (sec % 3600) / 60, sec % 60)
++}
++
+ @Composable
+ fun LyricsList(lyrics: List<com.flacplayer.app.lyrics.LrcLine>, positionMs: Long) {
+     val listState = rememberLazyListState()
+-- 
+2.39.5
+
