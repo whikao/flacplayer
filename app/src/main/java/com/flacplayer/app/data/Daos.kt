@@ -25,6 +25,21 @@ interface TrackDao {
 }
 
 @Dao
+interface PlaySessionDao {
+    @Insert
+    suspend fun insert(session: PlaySessionEntity): Long
+
+    @Query("UPDATE play_sessions SET endMs = :endMs WHERE id = :id")
+    suspend fun updateEndMs(id: Long, endMs: Long)
+
+    @Query("SELECT * FROM play_sessions ORDER BY startMs DESC")
+    fun allSessions(): Flow<List<PlaySessionEntity>>
+
+    @Query("DELETE FROM play_sessions")
+    suspend fun deleteAll()
+}
+
+@Dao
 interface PlaylistDao {
     @Query("SELECT * FROM playlists ORDER BY id ASC")
     fun allPlaylists(): Flow<List<PlaylistEntity>>

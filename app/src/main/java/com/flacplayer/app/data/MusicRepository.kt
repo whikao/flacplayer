@@ -7,9 +7,25 @@ class MusicRepository(context: Context) {
     private val db = AppDatabase.get(context)
     private val trackDao = db.trackDao()
     private val playlistDao = db.playlistDao()
+    private val playSessionDao = db.playSessionDao()
 
     val tracks: Flow<List<TrackEntity>> = trackDao.allTracks()
     val playlists: Flow<List<PlaylistEntity>> = playlistDao.allPlaylists()
+    val playSessions: Flow<List<PlaySessionEntity>> = playSessionDao.allSessions()
+
+    suspend fun startSession(title: String): Long =
+        playSessionDao.insert(
+            PlaySessionEntity(
+                startMs = System.currentTimeMillis(),
+                endMs = System.currentTimeMillis(),
+                trackTitle = title
+            )
+        )
+
+    suspend fun updateSessionEnd(id: Long) =
+        playSessionDao.updateEndMs(id, System.currentTimeMillis())
+
+    suspend fun clearHistory() = playSessionDao.deleteAll()
 
     fun tracksInPlaylist(playlistId: Long): Flow<List<TrackEntity>> =
         playlistDao.tracksInPlaylist(playlistId)

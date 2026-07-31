@@ -19,6 +19,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.runtime.Composable
@@ -34,6 +35,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.flacplayer.app.ui.HistoryScreen
 import com.flacplayer.app.ui.MainViewModel
 import com.flacplayer.app.ui.NowPlayingScreen
 import com.flacplayer.app.ui.PlaylistDetailScreen
@@ -124,6 +126,17 @@ fun AppRoot(viewModel: MainViewModel) {
                         icon = { Icon(Icons.Filled.PlayCircle, contentDescription = "正在播放") },
                         label = { Text("正在播放") }
                     )
+                    NavigationBarItem(
+                        selected = selectedTab == 3,
+                        onClick = {
+                            selectedTab = 3
+                            navController.navigate("history") {
+                                popUpTo("songs")
+                            }
+                        },
+                        icon = { Icon(Icons.Filled.History, contentDescription = "历史") },
+                        label = { Text("历史") }
+                    )
                 }
             }
         }
@@ -173,6 +186,9 @@ fun AppRoot(viewModel: MainViewModel) {
             }
             composable("now") {
                 NowPlayingScreen(viewModel = viewModel)
+            }
+            composable("history") {
+                HistoryScreen(viewModel = viewModel)
             }
         }
     }

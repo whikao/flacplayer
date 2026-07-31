@@ -1,0 +1,460 @@
+From 2d427f50cba964eb3695d9b736a975450835fe06 Mon Sep 17 00:00:00 2001
+From: ci <ci@local>
+Date: Fri, 31 Jul 2026 20:55:29 +0800
+Subject: [PATCH] feat: play history + audio focus resume
+
+---
+ .../java/com/flacplayer/app/MainActivity.kt   |  16 +++
+ .../com/flacplayer/app/data/AppDatabase.kt    |  25 +++-
+ .../main/java/com/flacplayer/app/data/Daos.kt |  15 +++
+ .../java/com/flacplayer/app/data/Entities.kt  |   8 ++
+ .../flacplayer/app/data/MusicRepository.kt    |  16 +++
+ .../flacplayer/app/player/PlaybackService.kt  |   8 +-
+ .../flacplayer/app/player/PlayerController.kt |  39 +++++++
+ .../com/flacplayer/app/ui/HistoryScreen.kt    | 110 ++++++++++++++++++
+ .../com/flacplayer/app/ui/MainViewModel.kt    |   8 ++
+ 9 files changed, 241 insertions(+), 4 deletions(-)
+ create mode 100644 app/src/main/java/com/flacplayer/app/ui/HistoryScreen.kt
+
+diff --git a/app/src/main/java/com/flacplayer/app/MainActivity.kt b/app/src/main/java/com/flacplayer/app/MainActivity.kt
+index 5ed7f83..4304578 100644
+--- a/app/src/main/java/com/flacplayer/app/MainActivity.kt
++++ b/app/src/main/java/com/flacplayer/app/MainActivity.kt
+@@ -19,6 +19,7 @@ import androidx.compose.material3.Scaffold
+ import androidx.compose.material3.Text
+ import androidx.compose.material.icons.Icons
+ import androidx.compose.material.icons.automirrored.filled.QueueMusic
++import androidx.compose.material.icons.filled.History
+ import androidx.compose.material.icons.filled.MusicNote
+ import androidx.compose.material.icons.filled.PlayCircle
+ import androidx.compose.runtime.Composable
+@@ -34,6 +35,7 @@ import androidx.navigation.compose.NavHost
+ import androidx.navigation.compose.composable
+ import androidx.navigation.compose.rememberNavController
+ import androidx.navigation.navArgument
++import com.flacplayer.app.ui.HistoryScreen
+ import com.flacplayer.app.ui.MainViewModel
+ import com.flacplayer.app.ui.NowPlayingScreen
+ import com.flacplayer.app.ui.PlaylistDetailScreen
+@@ -124,6 +126,17 @@ fun AppRoot(viewModel: MainViewModel) {
+                         icon = { Icon(Icons.Filled.PlayCircle, contentDescription = "正在播放") },
+                         label = { Text("正在播放") }
+                     )
++                    NavigationBarItem(
++                        selected = selectedTab == 3,
++                        onClick = {
++                            selectedTab = 3
++                            navController.navigate("history") {
++                                popUpTo("songs")
++                            }
++                        },
++                        icon = { Icon(Icons.Filled.History, contentDescription = "历史") },
++                        label = { Text("历史") }
++                    )
+                 }
+             }
+         }
+@@ -174,6 +187,9 @@ fun AppRoot(viewModel: MainViewModel) {
+             composable("now") {
+                 NowPlayingScreen(viewModel = viewModel)
+             }
++            composable("history") {
++                HistoryScreen(viewModel = viewModel)
++            }
+         }
+     }
+ }
+diff --git a/app/src/main/java/com/flacplayer/app/data/AppDatabase.kt b/app/src/main/java/com/flacplayer/app/data/AppDatabase.kt
+index e09885c..9d593ca 100644
+--- a/app/src/main/java/com/flacplayer/app/data/AppDatabase.kt
++++ b/app/src/main/java/com/flacplayer/app/data/AppDatabase.kt
+@@ -4,26 +4,45 @@ import android.content.Context
+ import androidx.room.Database
+ import androidx.room.Room
+ import androidx.room.RoomDatabase
++import androidx.room.migration.Migration
++import androidx.sqlite.db.SupportSQLiteDatabase
+ 
+ @Database(
+-    entities = [TrackEntity::class, PlaylistEntity::class, PlaylistEntry::class],
+-    version = 1,
++    entities = [TrackEntity::class, PlaylistEntity::class, PlaylistEntry::class, PlaySessionEntity::class],
++    version = 2,
+     exportSchema = false
+ )
+ abstract class AppDatabase : RoomDatabase() {
+     abstract fun trackDao(): TrackDao
+     abstract fun playlistDao(): PlaylistDao
++    abstract fun playSessionDao(): PlaySessionDao
+ 
+     companion object {
+         @Volatile private var instance: AppDatabase? = null
+ 
++        /** 1 -> 2：新增播放历史表，保留原有歌曲/歌单数据 */
++        private val MIGRATION_1_2 = object : Migration(1, 2) {
++            override fun migrate(db: SupportSQLiteDatabase) {
++                db.execSQL(
++                    """
++                    CREATE TABLE IF NOT EXISTS `play_sessions` (
++                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
++                        `startMs` INTEGER NOT NULL,
++                        `endMs` INTEGER NOT NULL,
++                        `trackTitle` TEXT NOT NULL
++                    )
++                    """.trimIndent()
++                )
++            }
++        }
++
+         fun get(context: Context): AppDatabase =
+             instance ?: synchronized(this) {
+                 instance ?: Room.databaseBuilder(
+                     context.applicationContext,
+                     AppDatabase::class.java,
+                     "flacplayer.db"
+-                ).build().also { instance = it }
++                ).addMigrations(MIGRATION_1_2).build().also { instance = it }
+             }
+     }
+ }
+diff --git a/app/src/main/java/com/flacplayer/app/data/Daos.kt b/app/src/main/java/com/flacplayer/app/data/Daos.kt
+index ada8121..efea1d6 100644
+--- a/app/src/main/java/com/flacplayer/app/data/Daos.kt
++++ b/app/src/main/java/com/flacplayer/app/data/Daos.kt
+@@ -24,6 +24,21 @@ interface TrackDao {
+     suspend fun byIds(ids: List<Long>): List<TrackEntity>
+ }
+ 
++@Dao
++interface PlaySessionDao {
++    @Insert
++    suspend fun insert(session: PlaySessionEntity): Long
++
++    @Query("UPDATE play_sessions SET endMs = :endMs WHERE id = :id")
++    suspend fun updateEndMs(id: Long, endMs: Long)
++
++    @Query("SELECT * FROM play_sessions ORDER BY startMs DESC")
++    fun allSessions(): Flow<List<PlaySessionEntity>>
++
++    @Query("DELETE FROM play_sessions")
++    suspend fun deleteAll()
++}
++
+ @Dao
+ interface PlaylistDao {
+     @Query("SELECT * FROM playlists ORDER BY id ASC")
+diff --git a/app/src/main/java/com/flacplayer/app/data/Entities.kt b/app/src/main/java/com/flacplayer/app/data/Entities.kt
+index 69d9558..0c845db 100644
+--- a/app/src/main/java/com/flacplayer/app/data/Entities.kt
++++ b/app/src/main/java/com/flacplayer/app/data/Entities.kt
+@@ -25,6 +25,14 @@ data class PlaylistEntity(
+     val name: String
+ )
+ 
++@Entity(tableName = "play_sessions")
++data class PlaySessionEntity(
++    @PrimaryKey(autoGenerate = true) val id: Long = 0,
++    val startMs: Long,
++    val endMs: Long,
++    val trackTitle: String
++)
++
+ @Entity(
+     tableName = "playlist_entries",
+     primaryKeys = ["playlistId", "trackId"],
+diff --git a/app/src/main/java/com/flacplayer/app/data/MusicRepository.kt b/app/src/main/java/com/flacplayer/app/data/MusicRepository.kt
+index fb3dd0d..2050888 100644
+--- a/app/src/main/java/com/flacplayer/app/data/MusicRepository.kt
++++ b/app/src/main/java/com/flacplayer/app/data/MusicRepository.kt
+@@ -7,9 +7,25 @@ class MusicRepository(context: Context) {
+     private val db = AppDatabase.get(context)
+     private val trackDao = db.trackDao()
+     private val playlistDao = db.playlistDao()
++    private val playSessionDao = db.playSessionDao()
+ 
+     val tracks: Flow<List<TrackEntity>> = trackDao.allTracks()
+     val playlists: Flow<List<PlaylistEntity>> = playlistDao.allPlaylists()
++    val playSessions: Flow<List<PlaySessionEntity>> = playSessionDao.allSessions()
++
++    suspend fun startSession(title: String): Long =
++        playSessionDao.insert(
++            PlaySessionEntity(
++                startMs = System.currentTimeMillis(),
++                endMs = System.currentTimeMillis(),
++                trackTitle = title
++            )
++        )
++
++    suspend fun updateSessionEnd(id: Long) =
++        playSessionDao.updateEndMs(id, System.currentTimeMillis())
++
++    suspend fun clearHistory() = playSessionDao.deleteAll()
+ 
+     fun tracksInPlaylist(playlistId: Long): Flow<List<TrackEntity>> =
+         playlistDao.tracksInPlaylist(playlistId)
+diff --git a/app/src/main/java/com/flacplayer/app/player/PlaybackService.kt b/app/src/main/java/com/flacplayer/app/player/PlaybackService.kt
+index 793ad0c..d731d05 100644
+--- a/app/src/main/java/com/flacplayer/app/player/PlaybackService.kt
++++ b/app/src/main/java/com/flacplayer/app/player/PlaybackService.kt
+@@ -1,5 +1,6 @@
+ package com.flacplayer.app.player
+ 
++import androidx.media3.common.AudioAttributes
+ import androidx.media3.exoplayer.ExoPlayer
+ import androidx.media3.session.MediaSession
+ import androidx.media3.session.MediaSessionService
+@@ -10,7 +11,12 @@ class PlaybackService : MediaSessionService() {
+ 
+     override fun onCreate() {
+         super.onCreate()
+-        val player = ExoPlayer.Builder(this).build()
++        // handleAudioFocus=true：闹钟/来电抢占焦点时自动暂停，焦点恢复后自动续播
++        // handleAudioBecomingNoisy=true：拔出耳机时自动暂停
++        val player = ExoPlayer.Builder(this)
++            .setAudioAttributes(AudioAttributes.DEFAULT, /* handleAudioFocus= */ true)
++            .setHandleAudioBecomingNoisy(true)
++            .build()
+         mediaSession = MediaSession.Builder(this, player).build()
+     }
+ 
+diff --git a/app/src/main/java/com/flacplayer/app/player/PlayerController.kt b/app/src/main/java/com/flacplayer/app/player/PlayerController.kt
+index 7280240..28ec1b8 100644
+--- a/app/src/main/java/com/flacplayer/app/player/PlayerController.kt
++++ b/app/src/main/java/com/flacplayer/app/player/PlayerController.kt
+@@ -8,6 +8,7 @@ import androidx.media3.common.Player
+ import androidx.core.content.ContextCompat
+ import androidx.media3.session.MediaController
+ import androidx.media3.session.SessionToken
++import com.flacplayer.app.data.MusicRepository
+ import com.flacplayer.app.data.TrackEntity
+ import com.google.common.util.concurrent.ListenableFuture
+ import kotlinx.coroutines.CoroutineScope
+@@ -21,9 +22,14 @@ import kotlinx.coroutines.launch
+ class PlayerController(private val context: Context) {
+ 
+     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
++    private val repository = MusicRepository(context)
+     private var controllerFuture: ListenableFuture<MediaController>? = null
+     private var controller: MediaController? = null
+ 
++    /** 当前播放会话（播放历史），null 表示未在播放 */
++    private var sessionId: Long? = null
++    private var wasPlaying = false
++
+     /** 当前交给播放器的完整列表 */
+     var queue: List<TrackEntity> = emptyList()
+         private set
+@@ -68,6 +74,7 @@ class PlayerController(private val context: Context) {
+                 syncState(c)
+                 startPositionPolling()
+                 startElapsedTicker()
++                startSessionHeartbeat()
+                 onReady?.invoke()
+             }, ContextCompat.getMainExecutor(context))
+         }
+@@ -99,6 +106,19 @@ class PlayerController(private val context: Context) {
+         }
+     }
+ 
++    private fun startSessionHeartbeat() {
++        // 每 30 秒心跳一次：更新未闭合会话的 endMs，
++        // 即使突然断电，数据库里也保留最近一次心跳的结束时间
++        scope.launch {
++            while (true) {
++                delay(30_000)
++                if (controller?.isPlaying == true) {
++                    sessionId?.let { id -> repository.updateSessionEnd(id) }
++                }
++            }
++        }
++    }
++
+     fun resetPlayElapsed() {
+         _playElapsed.value = 0L
+     }
+@@ -106,6 +126,10 @@ class PlayerController(private val context: Context) {
+     private fun syncState(player: Player) {
+         _currentIndex.value = player.currentMediaItemIndex.takeIf { it >= 0 } ?: -1
+         _isPlaying.value = player.isPlaying
++        if (player.isPlaying != wasPlaying) {
++            wasPlaying = player.isPlaying
++            if (player.isPlaying) onSessionStart() else onSessionEnd()
++        }
+         _durationMs.value = player.duration.coerceAtLeast(0L)
+         _positionMs.value = player.currentPosition.coerceAtLeast(0L)
+         _playMode.value = when {
+@@ -173,7 +197,22 @@ class PlayerController(private val context: Context) {
+ 
+     fun pause() = controller?.pause()
+ 
++    /** 播放开始：开启一条新的历史会话 */
++    private fun onSessionStart() {
++        val title = currentTrack()?.title ?: ""
++        scope.launch { sessionId = repository.startSession(title) }
++    }
++
++    /** 播放停止/释放：闭合当前会话 */
++    private fun onSessionEnd() {
++        val id = sessionId ?: return
++        sessionId = null
++        scope.launch { repository.updateSessionEnd(id) }
++    }
++
+     fun release() {
++        wasPlaying = false
++        onSessionEnd()
+         controller?.removeListener(listener)
+         controllerFuture?.let { MediaController.releaseFuture(it) }
+         controller = null
+diff --git a/app/src/main/java/com/flacplayer/app/ui/HistoryScreen.kt b/app/src/main/java/com/flacplayer/app/ui/HistoryScreen.kt
+new file mode 100644
+index 0000000..a8982dc
+--- /dev/null
++++ b/app/src/main/java/com/flacplayer/app/ui/HistoryScreen.kt
+@@ -0,0 +1,110 @@
++package com.flacplayer.app.ui
++
++import androidx.compose.foundation.layout.Box
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.Spacer
++import androidx.compose.foundation.layout.fillMaxSize
++import androidx.compose.foundation.layout.height
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.lazy.LazyColumn
++import androidx.compose.foundation.lazy.items
++import androidx.compose.material.icons.Icons
++import androidx.compose.material.icons.filled.Delete
++import androidx.compose.material3.AlertDialog
++import androidx.compose.material3.Icon
++import androidx.compose.material3.IconButton
++import androidx.compose.material3.ListItem
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.Text
++import androidx.compose.material3.TextButton
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.collectAsState
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.unit.dp
++import com.flacplayer.app.data.PlaySessionEntity
++import java.text.SimpleDateFormat
++import java.util.Date
++import java.util.Locale
++
++@Composable
++fun HistoryScreen(viewModel: MainViewModel) {
++    val history by viewModel.history.collectAsState()
++    var showClearConfirm by remember { mutableStateOf(false) }
++
++    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
++        Spacer(Modifier.height(8.dp))
++        Row(verticalAlignment = Alignment.CenterVertically) {
++            Text(
++                "播放历史",
++                style = MaterialTheme.typography.headlineSmall,
++                modifier = Modifier.weight(1f)
++            )
++            if (history.isNotEmpty()) {
++                IconButton(onClick = { showClearConfirm = true }) {
++                    Icon(Icons.Filled.Delete, contentDescription = "清空历史")
++                }
++            }
++        }
++        Spacer(Modifier.height(8.dp))
++        if (history.isEmpty()) {
++            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
++                Text(
++                    "还没有播放记录",
++                    color = MaterialTheme.colorScheme.onSurfaceVariant
++                )
++            }
++        } else {
++            LazyColumn {
++                items(history, key = { it.id }) { session ->
++                    HistoryItem(session)
++                }
++            }
++        }
++    }
++
++    if (showClearConfirm) {
++        AlertDialog(
++            onDismissRequest = { showClearConfirm = false },
++            title = { Text("清空播放历史") },
++            text = { Text("确定要删除全部播放记录吗？此操作无法撤销。") },
++            confirmButton = {
++                TextButton(onClick = {
++                    viewModel.clearHistory()
++                    showClearConfirm = false
++                }) { Text("清空") }
++            },
++            dismissButton = {
++                TextButton(onClick = { showClearConfirm = false }) { Text("取消") }
++            }
++        )
++    }
++}
++
++@Composable
++private fun HistoryItem(session: PlaySessionEntity) {
++    val dayFormat = remember { SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()) }
++    val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
++    val start = dayFormat.format(Date(session.startMs))
++    // 新会话插入时 endMs == startMs，心跳/暂停后才被更新；未推进视为未闭合
++    val open = session.endMs <= session.startMs
++    val summary = if (open) {
++        "$start 开始 · 播放中"
++    } else {
++        val durationMs = session.endMs - session.startMs
++        val hours = durationMs / 3_600_000
++        val minutes = durationMs % 3_600_000 / 60_000
++        "$start 开始 → ${timeFormat.format(Date(session.endMs))} 结束（共 $hours 小时 $minutes 分）"
++    }
++    ListItem(
++        headlineContent = { Text(summary) },
++        supportingContent = {
++            Text(if (session.trackTitle.isBlank()) "未知曲目" else session.trackTitle)
++        }
++    )
++}
+diff --git a/app/src/main/java/com/flacplayer/app/ui/MainViewModel.kt b/app/src/main/java/com/flacplayer/app/ui/MainViewModel.kt
+index d83e6bd..05222b5 100644
+--- a/app/src/main/java/com/flacplayer/app/ui/MainViewModel.kt
++++ b/app/src/main/java/com/flacplayer/app/ui/MainViewModel.kt
+@@ -5,6 +5,7 @@ import android.net.Uri
+ import androidx.lifecycle.AndroidViewModel
+ import androidx.lifecycle.viewModelScope
+ import com.flacplayer.app.data.MusicRepository
++import com.flacplayer.app.data.PlaySessionEntity
+ import com.flacplayer.app.data.PlaylistEntity
+ import com.flacplayer.app.data.TrackEntity
+ import com.flacplayer.app.importer.SafImporter
+@@ -34,6 +35,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
+     val playlists: StateFlow<List<PlaylistEntity>> = repository.playlists
+         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+ 
++    val history: StateFlow<List<PlaySessionEntity>> = repository.playSessions
++        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
++
+     private val _playlistTracks = MutableStateFlow<List<TrackEntity>>(emptyList())
+     val playlistTracks: StateFlow<List<TrackEntity>> = _playlistTracks.asStateFlow()
+ 
+@@ -82,6 +86,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
+         viewModelScope.launch { repository.removeTrack(track.id) }
+     }
+ 
++    fun clearHistory() {
++        viewModelScope.launch { repository.clearHistory() }
++    }
++
+     fun createPlaylist(name: String) {
+         viewModelScope.launch { repository.createPlaylist(name.trim().ifBlank { "新歌单" }) }
+     }
+-- 
+2.39.5
+

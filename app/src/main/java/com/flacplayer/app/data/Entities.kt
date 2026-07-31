@@ -25,6 +25,14 @@ data class PlaylistEntity(
     val name: String
 )
 
+@Entity(tableName = "play_sessions")
+data class PlaySessionEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val startMs: Long,
+    val endMs: Long,
+    val trackTitle: String
+)
+
 @Entity(
     tableName = "playlist_entries",
     primaryKeys = ["playlistId", "trackId"],

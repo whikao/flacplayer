@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.flacplayer.app.data.MusicRepository
+import com.flacplayer.app.data.PlaySessionEntity
 import com.flacplayer.app.data.PlaylistEntity
 import com.flacplayer.app.data.TrackEntity
 import com.flacplayer.app.importer.SafImporter
@@ -32,6 +33,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val playlists: StateFlow<List<PlaylistEntity>> = repository.playlists
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    val history: StateFlow<List<PlaySessionEntity>> = repository.playSessions
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     private val _playlistTracks = MutableStateFlow<List<TrackEntity>>(emptyList())
@@ -80,6 +84,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun removeTrack(track: TrackEntity) {
         viewModelScope.launch { repository.removeTrack(track.id) }
+    }
+
+    fun clearHistory() {
+        viewModelScope.launch { repository.clearHistory() }
     }
 
     fun createPlaylist(name: String) {

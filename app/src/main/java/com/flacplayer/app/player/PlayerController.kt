@@ -8,6 +8,7 @@ import androidx.media3.common.Player
 import androidx.core.content.ContextCompat
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import com.flacplayer.app.data.MusicRepository
 import com.flacplayer.app.data.TrackEntity
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CoroutineScope
@@ -21,8 +22,13 @@ import kotlinx.coroutines.launch
 class PlayerController(private val context: Context) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val repository = MusicRepository(context)
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
+
+    /** 当前播放会话（播放历史），null 表示未在播放 */
+    private var sessionId: Long? = null
+    private var wasPlaying = false
 
     /** 当前交给播放器的完整列表 */
     var queue: List<TrackEntity> = emptyList()
@@ -68,6 +74,7 @@ class PlayerController(private val context: Context) {
                 syncState(c)
                 startPositionPolling()
                 startElapsedTicker()
+                startSessionHeartbeat()
                 onReady?.invoke()
             }, ContextCompat.getMainExecutor(context))
         }
@@ -99,6 +106,19 @@ class PlayerController(private val context: Context) {
         }
     }
 
+    private fun startSessionHeartbeat() {
+        // 每 30 秒心跳一次：更新未闭合会话的 endMs，
+        // 即使突然断电，数据库里也保留最近一次心跳的结束时间
+        scope.launch {
+            while (true) {
+                delay(30_000)
+                if (controller?.isPlaying == true) {
+                    sessionId?.let { id -> repository.updateSessionEnd(id) }
+                }
+            }
+        }
+    }
+
     fun resetPlayElapsed() {
         _playElapsed.value = 0L
     }
@@ -106,6 +126,10 @@ class PlayerController(private val context: Context) {
     private fun syncState(player: Player) {
         _currentIndex.value = player.currentMediaItemIndex.takeIf { it >= 0 } ?: -1
         _isPlaying.value = player.isPlaying
+        if (player.isPlaying != wasPlaying) {
+            wasPlaying = player.isPlaying
+            if (player.isPlaying) onSessionStart() else onSessionEnd()
+        }
         _durationMs.value = player.duration.coerceAtLeast(0L)
         _positionMs.value = player.currentPosition.coerceAtLeast(0L)
         _playMode.value = when {
@@ -173,7 +197,22 @@ class PlayerController(private val context: Context) {
 
     fun pause() = controller?.pause()
 
+    /** 播放开始：开启一条新的历史会话 */
+    private fun onSessionStart() {
+        val title = currentTrack()?.title ?: ""
+        scope.launch { sessionId = repository.startSession(title) }
+    }
+
+    /** 播放停止/释放：闭合当前会话 */
+    private fun onSessionEnd() {
+        val id = sessionId ?: return
+        sessionId = null
+        scope.launch { repository.updateSessionEnd(id) }
+    }
+
     fun release() {
+        wasPlaying = false
+        onSessionEnd()
         controller?.removeListener(listener)
         controllerFuture?.let { MediaController.releaseFuture(it) }
         controller = null
